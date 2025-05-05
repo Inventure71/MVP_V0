@@ -8,3 +8,4 @@ gTTS>=2.5.0
 moviepy>=2.1.0
 pillow>=10.0.0 # Often needed by moviepy for text rendering
 numpy # Often needed by moviepy 
+PyMuPDF>=1.24.0 # For PDF image extraction 

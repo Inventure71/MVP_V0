@@ -11,6 +11,9 @@ from . import gemini_processor
 from . import tts_processor
 from . import video_processor # Ensure this imports the new function correctly
 
+# Import the specific function name we'll be calling
+from .pdf_processor import process_uploaded_pdfs
+
 load_dotenv()
 
 app = FastAPI()
@@ -34,10 +37,11 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
     job_upload_dir = os.path.join(UPLOAD_DIR, job_id)
     job_result_dir = os.path.join(RESULTS_DIR, job_id)
     os.makedirs(job_upload_dir, exist_ok=True)
-    os.makedirs(job_result_dir, exist_ok=True)
+    os.makedirs(job_result_dir, exist_ok=True) # This directory will now contain annotated_images subdir
 
     pdf_paths = []
     combined_text = "" # Initialize
+    all_images_info = [] # Initialize list for image info
     scenes = []
     dialogue_blocks = []
     processed_dialogue_blocks = []
@@ -56,20 +60,21 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
             pdf_paths.append(file_path)
         print(f"Job {job_id}: Uploaded {len(pdf_paths)} PDF(s).")
 
-        # --- 1. Extract Text --- 
-        print(f"Job {job_id}: Extracting text from PDFs...")
-        combined_text = pdf_processor.extract_text_from_pdfs(pdf_paths)
-        print(f"Job {job_id}: Extracted {len(combined_text)} characters.")
-        if not combined_text:
-             raise HTTPException(status_code=400, detail="Could not extract text from the provided PDF(s). They might be image-based or corrupted.")
+        # --- 1. Extract Text & Images ---
+        print(f"Job {job_id}: Extracting text and images from PDFs...")
+        # Call the new processor function
+        combined_text, all_images_info = process_uploaded_pdfs(pdf_paths, job_id)
+        print(f"Job {job_id}: Extracted {len(combined_text)} characters and found {len(all_images_info)} images.")
+        if not combined_text and not all_images_info: # Check if anything was extracted
+             raise HTTPException(status_code=400, detail="Could not extract text or images from the provided PDF(s).")
+        # Note: We might proceed even if only images OR text were found, depending on desired behavior.
 
-        # --- 2. Generate Scenes (Gemini) --- 
+        # --- 2. Generate Scenes (Gemini) ---
         try:
             print(f"Job {job_id}: Generating scenes from text with Gemini...")
-            scenes = gemini_processor.generate_scenes_from_text(combined_text)
+            # Pass both text and image info to Gemini processor
+            scenes = gemini_processor.generate_scenes_from_text(combined_text, all_images_info)
             if not scenes:
-                 # Allow processing to continue? Maybe create a default scene?
-                 # For now, raise error if scene generation fails fundamentally.
                  raise HTTPException(status_code=500, detail="Gemini failed to generate scene content.")
             print(f"Job {job_id}: Successfully generated {len(scenes)} scenes.")
         except Exception as e:
@@ -79,19 +84,19 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
         # --- 3. Generate Dialogue Blocks (Gemini) ---
         try:
             print(f"Job {job_id}: Generating structured dialogue with Gemini...")
-            # Pass original text for context, and the generated scenes
-            dialogue_blocks = gemini_processor.generate_structured_dialogue(combined_text, scenes)
+            # Pass original text context, generated scenes, and image info
+            dialogue_blocks = gemini_processor.generate_structured_dialogue(combined_text, scenes, all_images_info)
             if not dialogue_blocks:
-                 # Maybe allow silent video? For now, consider dialogue essential.
                  raise HTTPException(status_code=500, detail="Gemini failed to generate dialogue content.")
             print(f"Job {job_id}: Successfully generated {len(dialogue_blocks)} dialogue blocks.")
         except Exception as e:
             print(f"Job {job_id}: Gemini call failed during dialogue generation: {e}")
             raise HTTPException(status_code=500, detail=f"Error communicating with AI model for dialogue generation: {str(e)}")
 
-        # --- 4. Generate Audio Blocks (TTS) --- 
+        # --- 4. Generate Audio Blocks (TTS) ---
         try:
             print(f"Job {job_id}: Generating audio for {len(dialogue_blocks)} dialogue blocks...")
+            # The dialogue blocks might *contain* image references from Gemini now
             processed_dialogue_blocks = tts_processor.generate_audio_blocks(dialogue_blocks, job_result_dir)
             # Check if ANY audio was successfully generated
             successful_audio_count = sum(1 for b in processed_dialogue_blocks if b.get('audio_path') and b.get('duration') is not None)

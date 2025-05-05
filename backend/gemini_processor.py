@@ -3,36 +3,37 @@ import os
 import json
 from typing import Tuple, List, Dict, Any, Optional
 import re
+from dotenv import load_dotenv
+import base64
+from PIL import Image
+import io
 
-# Configure the Gemini client
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise ValueError("GEMINI_API_KEY environment variable not set.")
-genai.configure(api_key=api_key)
+# Load environment variables
+load_dotenv()
 
-# --- Constants --- (Adjust as needed)
-MODEL_NAME = "gemini-1.5-flash" # Using flash for speed/cost, consider Pro for complexity
-JSON_CONFIG = genai.types.GenerationConfig(response_mime_type="application/json")
-SAFETY_SETTINGS = { # Define stricter safety settings if needed
-    # e.g., "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-}
+# Configure Google Generative AI with API key
+API_KEY = os.getenv("GOOGLE_API_KEY")
+if not API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set!")
 
-# Define a reasonable maximum token limit per chunk for the chosen model
-# This is an estimate; actual limits depend on the model version.
-# Consult Gemini documentation for precise limits.
-MAX_INPUT_TOKENS_PER_CHUNK = 10000 # Adjust based on model documentation and testing
+genai.configure(api_key=API_KEY)
+
+# Constants
+MODEL_NAME = "gemini-1.5-pro" # Higher capability model
+MAX_CHARS_PER_CHUNK = 25000    # Avoid exceeding token limits
+MAX_IMAGES_PER_CHUNK = 20      # Limit images per API call to avoid limits
 
 # --- Helper Function for Text Chunking (if needed) ---
 # Using char count as a proxy for token limit safety for large inputs
-def chunk_text(text: str, max_chars: int = 30000) -> List[str]:
+def chunk_text(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> List[str]:
     """Simple text chunking based on character count, attempting paragraph splits."""
     chunks = []
     current_chunk = ""
-    for paragraph in text.split('\\n\\n'): # Split by paragraphs first
+    for paragraph in text.split('\n\n'): # Split by paragraphs first
         if not paragraph.strip():
              continue # Skip empty paragraphs
 
-        paragraph_with_sep = paragraph + "\\n\\n"
+        paragraph_with_sep = paragraph + "\n\n"
         if len(current_chunk) + len(paragraph_with_sep) < max_chars:
             current_chunk += paragraph_with_sep
         else:
@@ -47,7 +48,7 @@ def chunk_text(text: str, max_chars: int = 30000) -> List[str]:
                 for i in range(0, len(paragraph), max_chars): # Split the paragraph itself
                     part = paragraph[i:i + max_chars]
                     # Add as separate chunk, ensure newline separation if splitting mid-paragraph
-                    chunks.append(part + ("\\n\\n" if i + max_chars < len(paragraph) else "")) 
+                    chunks.append(part + ("\n\n" if i + max_chars < len(paragraph) else ""))
                 # The oversized paragraph is handled, don't add it to current_chunk
             else: # Paragraph fits in a chunk by itself, start new chunk
                  current_chunk = paragraph_with_sep
@@ -60,43 +61,19 @@ def chunk_text(text: str, max_chars: int = 30000) -> List[str]:
     return chunks
 
 # --- Core Gemini Interaction Functions ---
-def _call_gemini(prompt: str, model_name: str = MODEL_NAME, is_json_output: bool = True) -> Any:
-    """Helper function to call the Gemini API and handle potential errors."""
+def _call_gemini_text_only(prompt: str, model_name: str = MODEL_NAME, is_json_output: bool = True) -> Any:
+    """Helper function to call the Gemini API with text-only input and handle potential errors."""
     try:
         model = genai.GenerativeModel(model_name)
-        config = JSON_CONFIG if is_json_output else None
+        response = model.generate_content(prompt)
         
-        print(f"--- Calling Gemini ({'JSON' if is_json_output else 'Text'}) ---")
-        # print(f"Prompt:\n{prompt[:500]}...") # Optional: Log start of prompt
-
-        response = model.generate_content(
-            prompt,
-            generation_config=config,
-            safety_settings=SAFETY_SETTINGS
-        )
-
-        # Debugging: Print raw response parts if needed
-        # print(f"Raw Gemini Response Parts: {response.candidates[0].content.parts}")
-
-        if not response.candidates:
-             raise ValueError("Gemini response did not contain candidates.")
-        if response.prompt_feedback.block_reason:
-            raise ValueError(f"Gemini request blocked: {response.prompt_feedback.block_reason.name}")
+        if not response or not hasattr(response, 'text'):
+            print("Warning: Gemini returned empty response or unexpected format.")
+            return {} if is_json_output else ""
+            
+        result_text = response.text.strip()
         
-        # Handle cases where generation stops early or has no output
-        candidate = response.candidates[0]
-        if not candidate.content.parts:
-             finish_reason = candidate.finish_reason
-             if finish_reason != genai.types.FinishReason.STOP:
-                   raise ValueError(f"Gemini generation stopped unexpectedly: {finish_reason.name}")
-             else: # Valid stop but no parts - likely empty generation
-                   print("Warning: Gemini response candidate missing content parts but finish reason was STOP.")
-                   return {} if is_json_output else "" # Return empty structure/string
-
-
-        result_text = candidate.content.parts[0].text
-        # print(f"Result Text Received:\n{result_text[:500]}...") # Optional: Log start of result
-
+        # Handle JSON output parsing
         if is_json_output:
             # Clean potential markdown formatting around JSON
             if result_text.startswith("```json"): 
@@ -113,11 +90,11 @@ def _call_gemini(prompt: str, model_name: str = MODEL_NAME, is_json_output: bool
                 return parsed_json
             except json.JSONDecodeError as e:
                 print(f"Error decoding Gemini JSON response: {e}")
-                print(f"Problematic Response Text (first 500 chars):\\n{result_text[:500]}")
+                print(f"Problematic Response Text (first 500 chars):\n{result_text[:500]}")
                 # Attempt to find JSON within the text if simple cleaning failed
                 try:
                     # Regex to find a JSON object ({...}) or array ([...])
-                    json_match = re.search(r'(\{[^{}]*\}|\[[^\[\]]*\])', result_text, re.DOTALL)
+                    json_match = re.search(r'(\{.*?\}|\[.*?\])', result_text, re.DOTALL)
                     if json_match:
                         print("Attempting to parse extracted JSON block...")
                         extracted_json_str = json_match.group(0)
@@ -133,245 +110,492 @@ def _call_gemini(prompt: str, model_name: str = MODEL_NAME, is_json_output: bool
         else:
             # print("--- Gemini Call Successful (Text) ---")
             return result_text
-
+            
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
-        # Re-raise the exception to be caught by the main endpoint handler
-        raise
+        return {} if is_json_output else ""
 
-# --- New Scene Generation Function ---
-def generate_scenes_from_text(text: str) -> List[Dict[str, Any]]:
+def _call_gemini_with_images(prompt: str, image_paths: List[str], model_name: str = MODEL_NAME, is_json_output: bool = True) -> Any:
+    """Helper function to call the Gemini API with multimodal content (text + images)."""
+    try:
+        model = genai.GenerativeModel(model_name)
+        
+        # Prepare multimodal content parts
+        content_parts = [{"text": prompt}]
+        
+        # Add images to the content
+        for img_path in image_paths:
+            try:
+                # Open and load the image
+                img = Image.open(img_path)
+                
+                # Convert image to a content part
+                content_parts.append({"inline_data": {
+                    "mime_type": f"image/{img.format.lower() if img.format else 'png'}", 
+                    "data": _encode_image_to_base64(img_path)
+                }})
+            except Exception as img_err:
+                print(f"Error processing image {img_path}: {img_err}")
+                # Continue with other images if one fails
+        
+        # Generate response from multimodal content
+        response = model.generate_content(content_parts)
+        
+        if not response or not hasattr(response, 'text'):
+            print("Warning: Gemini returned empty response or unexpected format.")
+            return {} if is_json_output else ""
+            
+        result_text = response.text.strip()
+        
+        # Handle JSON output parsing
+        if is_json_output:
+            # Clean potential markdown formatting around JSON
+            if result_text.startswith("```json"): 
+                result_text = result_text[len("```json"):].strip()
+            elif result_text.startswith("```"): # Handle cases with ``` but no language specifier
+                 result_text = result_text[len("```"):].strip()
+
+            if result_text.endswith("```"):
+                result_text = result_text[:-len("```")].strip()
+
+            try:
+                parsed_json = json.loads(result_text)
+                print("--- Gemini Call Successful (JSON with images) ---")
+                return parsed_json
+            except json.JSONDecodeError as e:
+                print(f"Error decoding Gemini JSON response: {e}")
+                print(f"Problematic Response Text (first 500 chars):\n{result_text[:500]}")
+                # Attempt to find JSON within the text
+                try:
+                    json_match = re.search(r'(\{.*?\}|\[.*?\])', result_text, re.DOTALL)
+                    if json_match:
+                        print("Attempting to parse extracted JSON block...")
+                        extracted_json_str = json_match.group(0)
+                        parsed_json = json.loads(extracted_json_str)
+                        print("--- Gemini Call Successful (JSON extracted) ---")
+                        return parsed_json
+                    else:
+                         raise ValueError(f"Gemini returned non-JSON text when JSON was expected and extraction failed: {e}")
+                except Exception as inner_e:
+                     print(f"Could not recover JSON: {inner_e}")
+                     raise ValueError(f"Gemini returned invalid JSON: {e}")
+
+        else:
+            print("--- Gemini Call Successful (Text with images) ---")
+            return result_text
+            
+    except Exception as e:
+        print(f"Error calling Gemini API with images: {e}")
+        return {} if is_json_output else ""
+
+def _encode_image_to_base64(image_path):
+    """Convert an image to base64 encoding for API submission."""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+def _split_content_by_images(text: str, images_info: List[Dict[str, str]], max_images_per_chunk: int = MAX_IMAGES_PER_CHUNK) -> List[Dict[str, Any]]:
     """
-    Generates a list of scenes based on the input text using Gemini.
+    Split content into chunks based on image limits per API call.
+    
+    Args:
+        text: The full text with image placeholders
+        images_info: List of image metadata with labels and paths
+        max_images_per_chunk: Maximum images to include in each chunk
+        
+    Returns:
+        List of dictionaries with text and images for each chunk
+    """
+    chunks = []
+    remaining_text = text
+    remaining_images = images_info.copy()
+    
+    while remaining_images:
+        # Take up to max_images_per_chunk images
+        chunk_images = remaining_images[:max_images_per_chunk]
+        remaining_images = remaining_images[max_images_per_chunk:]
+        
+        # If we've processed all images, include all remaining text in the last chunk
+        if not remaining_images:
+            chunks.append({
+                "text": remaining_text,
+                "images": chunk_images
+            })
+            break
+            
+        # Find the position of the last image placeholder in this chunk
+        last_image_label = chunk_images[-1]["label"]
+        last_image_pos = remaining_text.find(last_image_label)
+        
+        if last_image_pos == -1:
+            # If can't find the image placeholder (unusual), just take a portion of text
+            text_breakpoint = len(remaining_text) // 2
+        else:
+            # Include text up to and including the last image placeholder plus some context
+            # Find the next paragraph break after the image placeholder
+            next_para_break = remaining_text.find("\n\n", last_image_pos)
+            if next_para_break == -1:
+                next_para_break = len(remaining_text)
+            text_breakpoint = next_para_break
+            
+        chunk_text = remaining_text[:text_breakpoint]
+        remaining_text = remaining_text[text_breakpoint:]
+        
+        chunks.append({
+            "text": chunk_text,
+            "images": chunk_images
+        })
+    
+    return chunks
+
+# --- Scene Generation Function (Updated) ---
+def generate_scenes_from_text(text: str, images_info: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """
+    Generates a list of scenes based on the input text using Gemini, 
+    instructing it to consider images directly.
 
     Args:
-        text: The input text extracted from PDFs.
+        text: The input text extracted from PDFs, potentially containing [IMG_N] placeholders.
+        images_info: List of dictionaries with info about extracted images.
 
     Returns:
         A list of dictionaries, where each dictionary represents a scene:
-        [{ "scene_number": int, "content": str }, ...]
+        [{ "scene_number": int, "content": str, "images_in_scene": List[str] }, ...]
         Returns an empty list if generation fails or no scenes are created.
     """
-    # Determine target number of scenes (e.g., 1 scene per ~150 words, adjust as needed)
     word_count = len(text.split())
-    # Ensure at least a few scenes, but cap it reasonably
     target_scenes = max(3, min(50, word_count // 150)) # Example: 3-50 scenes
-    print(f"Targeting ~{target_scenes} scenes for {word_count} words.")
+    image_labels = [img['label'] for img in images_info if 'label' in img]
+    has_images = bool(image_labels)
 
-    # Single prompt approach (might need chunking if text is > context window)
-    # Check model context window if text is very large. Flash has 1M tokens, Pro 1-2M. Should be okay for most PDFs.
-    prompt = f"""\
-Analyze the following text and divide it into logical scenes suitable for an educational video presentation. Aim for approximately {target_scenes} scenes. Each scene should represent a distinct topic, step, or concept discussed in the text. Scene content should be extracted or summarized from the text.
+    print(f"Targeting ~{target_scenes} scenes for {word_count} words. Found {len(image_labels)} image labels.")
+
+    # Split content into chunks if there are many images
+    content_chunks = _split_content_by_images(text, images_info) if has_images else [{"text": text, "images": []}]
+    
+    # Track all scenes across chunks
+    all_scenes = []
+    total_scenes = 0
+    
+    for chunk_index, chunk in enumerate(content_chunks):
+        chunk_text = chunk["text"]
+        chunk_images = chunk["images"]
+        chunk_image_paths = [img["path"] for img in chunk_images]
+        chunk_image_labels = [img["label"] for img in chunk_images]
+        
+        # Calculate scenes for this chunk
+        chunk_word_count = len(chunk_text.split())
+        chunk_target_scenes = max(1, min(50, chunk_word_count // 150))
+        if chunk_index == len(content_chunks) - 1:
+            # For last chunk, ensure we reach the total target scenes
+            chunk_target_scenes = max(1, target_scenes - total_scenes)
+            
+        print(f"Processing chunk {chunk_index+1}/{len(content_chunks)} with {len(chunk_images)} images. Target scenes: {chunk_target_scenes}")
+            
+        # Build prompt for this chunk
+        image_instructions = ""
+        if chunk_image_labels:
+            image_instructions = f"""\
+IMPORTANT: I am providing you with {len(chunk_image_labels)} images extracted from the source document. Each image appears at a specific point in the text, marked with placeholders like [IMG_1], [IMG_2], etc.
+
+When summarizing content for a scene, look at these images and consider them as part of your understanding. Your JSON output for each scene MUST include an "images_in_scene" key. This key's value should be a list containing the string labels (e.g., "[IMG_5]") of the images most relevant to that specific scene's content. Include a maximum of 2 image labels per scene. If no images are relevant to a scene, provide an empty list: "images_in_scene": [].
+""" 
+        else:
+            image_instructions = """\
+IMPORTANT: The input text does not appear to contain image references. For each scene, include the key "images_in_scene" with an empty list as its value: "images_in_scene": [].
+"""
+
+        prompt = f"""\
+Analyze the following text and divide it into logical scenes suitable for an educational video presentation. Aim for approximately {chunk_target_scenes} scenes. Each scene should represent a distinct topic, step, or concept discussed in the text. Scene content should be extracted or summarized from the text.
+
+{image_instructions}
 
 Input Text:
 ```
-{text}
-    ```
+{chunk_text}
+```
 
-    Task:
+Task:
 Generate a JSON response containing a single key "scenes". The value of "scenes" should be a list of JSON objects. Each object must represent one scene and contain the following keys:
-- "scene_number": An integer representing the order of the scene, starting from 1.
-- "content": A string containing the relevant portion or summary of the text for that scene. Ensure the content logically flows from one scene to the next and covers the original text comprehensively without excessive overlap unless necessary for context.
+- "scene_number": An integer representing the order of the scene, starting from {total_scenes + 1}.
+- "content": A string containing the relevant portion or summary of the text for that scene. Ensure the content logically flows and covers the original text comprehensively.
+- "images_in_scene": A list of strings containing the labels (e.g., "[IMG_5]") of up to 2 images most relevant to this scene's content. Use an empty list [] if no images are relevant.
 
-Example JSON Output Structure:
-    {{
-      "scenes": [
-    {{ "scene_number": 1, "content": "Text content for the first logical part..." }},
-    {{ "scene_number": 2, "content": "Text content covering the next concept..." }},
+Example JSON Output Structure (if images exist):
+{{
+  "scenes": [
+    {{ 
+      "scene_number": {total_scenes + 1}, 
+      "content": "Text content for the first logical part... mentions [IMG_1].",
+      "images_in_scene": ["[IMG_1]"] 
+    }},
+    {{ 
+      "scene_number": {total_scenes + 2}, 
+      "content": "Text content covering the next concept... related to [IMG_2] and maybe [IMG_3].",
+      "images_in_scene": ["[IMG_2]", "[IMG_3]"] 
+    }},
+    {{ 
+      "scene_number": {total_scenes + 3}, 
+      "content": "Text content with no relevant images.",
+      "images_in_scene": [] 
+    }},
     ...
   ]
 }}
 
-Generate the JSON output now based on the input text. Ensure scene numbers are sequential and start from 1.
+Generate the JSON output now based on the input text. Ensure scene numbers are sequential and start from {total_scenes + 1}. Ensure the "images_in_scene" key is present in every scene object.
 """
-    try:
-        response_json = _call_gemini(prompt, is_json_output=True)
+        try:
+            # Call Gemini with or without images based on what's available in this chunk
+            if chunk_image_paths:
+                print(f"--- Calling Gemini (JSON) with {len(chunk_image_paths)} images ---")
+                response_json = _call_gemini_with_images(prompt, chunk_image_paths, is_json_output=True)
+            else:
+                print(f"--- Calling Gemini (JSON) ---")
+                response_json = _call_gemini_text_only(prompt, is_json_output=True)
 
-        if isinstance(response_json, dict) and "scenes" in response_json and isinstance(response_json["scenes"], list):
-            validated_scenes = []
-            seen_numbers = set()
-            last_num = 0
-            for scene in response_json["scenes"]:
-                if isinstance(scene, dict) and \
-                   all(k in scene for k in ["scene_number", "content"]) and \
-                   isinstance(scene["scene_number"], int) and \
-                   scene["scene_number"] > 0 and \
-                   isinstance(scene["content"], str) and \
-                   scene["content"].strip(): # Ensure content is not empty
+            if isinstance(response_json, dict) and "scenes" in response_json and isinstance(response_json["scenes"], list):
+                validated_scenes = []
+                seen_numbers = set()
+                for scene in response_json["scenes"]:
+                    # Validate base structure + new images_in_scene field
+                    if isinstance(scene, dict) and \
+                       all(k in scene for k in ["scene_number", "content", "images_in_scene"]) and \
+                       isinstance(scene["scene_number"], int) and scene["scene_number"] > 0 and \
+                       isinstance(scene["content"], str) and scene["content"].strip() and \
+                       isinstance(scene["images_in_scene"], list):
+                        
+                        num = scene["scene_number"]
+                        if num in seen_numbers:
+                             print(f"Warning: Duplicate scene number {num} found. Renumbering.")
+                             num = total_scenes + len(validated_scenes) + 1
 
-                    num = scene["scene_number"]
-                    if num in seen_numbers:
-                         print(f"Warning: Duplicate scene number {num} found. Skipping.")
-                         continue
-                    # Optional: Check for sequential numbers? Might be too strict.
-                    # if num != last_num + 1:
-                    #    print(f"Warning: Non-sequential scene number {num} (expected {last_num + 1}).")
-                    
-                    seen_numbers.add(num)
-                    validated_scenes.append({
-                        "scene_number": num,
-                        "content": scene["content"].strip()
-                    })
-                else:
-                    print(f"Warning: Skipping invalid scene structure or empty content: {scene}")
+                        # Validate image labels format (optional but good)
+                        valid_image_labels = []
+                        for label in scene["images_in_scene"]:
+                             if isinstance(label, str) and re.match(r'^\[IMG_\d+\]$', label):
+                                 valid_image_labels.append(label)
+                             else:
+                                  print(f"Warning: Invalid image label format '{label}' in scene {num}. Skipping label.")
+                        
+                        # Limit to max 2 labels
+                        if len(valid_image_labels) > 2:
+                            print(f"Warning: Scene {num} had > 2 image labels. Truncating to first 2.")
+                            valid_image_labels = valid_image_labels[:2]
 
-            # Sort scenes by scene_number just in case Gemini didn't order them
-            validated_scenes.sort(key=lambda x: x["scene_number"])
+                        seen_numbers.add(num)
+                        validated_scenes.append({
+                            "scene_number": total_scenes + len(validated_scenes) + 1,  # Ensure sequential numbering
+                            "content": scene["content"].strip(),
+                            "images_in_scene": valid_image_labels # Store validated & truncated list
+                        })
+                    else:
+                        print(f"Warning: Skipping invalid scene structure: {scene}")
 
-            # Renumber sequentially if needed (optional, but safer)
-            # for i, scene_data in enumerate(validated_scenes):
-            #     scene_data["scene_number"] = i + 1
-            
-            if not validated_scenes:
-                 print("Warning: Gemini returned empty or invalid scene list structure.")
-                 return [] # Return empty list instead of raising error
-
-            print(f"Successfully generated and validated {len(validated_scenes)} scenes.")
-            return validated_scenes
-        else:
-             print(f"Warning: Unexpected JSON structure for scenes response: {response_json}")
-             return [] # Return empty list
-
-    except Exception as e:
-        print(f"Error generating scenes from Gemini: {e}")
-        # Don't raise here, return empty list to allow main flow to potentially handle it
+                # Update the scenes and counter
+                all_scenes.extend(validated_scenes)
+                total_scenes += len(validated_scenes)
+                print(f"Chunk {chunk_index+1}: Generated {len(validated_scenes)} scenes. Total: {total_scenes}")
+            else:
+                 print(f"Warning: Unexpected JSON structure for scenes response in chunk {chunk_index+1}: {response_json}")
+                 
+        except Exception as e:
+            print(f"Error generating scenes from Gemini for chunk {chunk_index+1}: {e}")
+    
+    # Final validation
+    if not all_scenes:
+        print("Warning: No valid scenes were generated from any chunk.")
         return []
+        
+    # Ensure scenes are properly sorted and numbered
+    all_scenes.sort(key=lambda x: x["scene_number"])
+    for i, scene in enumerate(all_scenes):
+        scene["scene_number"] = i + 1
+        
+    print(f"Successfully generated and validated {len(all_scenes)} scenes across {len(content_chunks)} chunks.")
+    return all_scenes
 
-# --- New Structured Dialogue Generation Function ---
-def generate_structured_dialogue(original_text: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+# --- Structured Dialogue Generation Function (Updated) ---
+def generate_structured_dialogue(original_text: str, scenes: List[Dict[str, Any]], images_info: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """
-    Generates a structured dialogue based on the original text and pre-defined scenes.
+    Generates a structured dialogue based on scenes, instructing the model 
+    to incorporate images directly.
 
     Args:
-        original_text: The full text extracted from the PDFs (for context).
-        scenes: The list of scene objects generated by `generate_scenes_from_text`.
-              Expected structure: [{"scene_number": int, "content": str}, ...]
+        original_text: The full text extracted from PDFs (for broader context).
+        scenes: The list of scene objects (including scene_number, content, images_in_scene).
+        images_info: List of dictionaries with info about extracted images.
 
     Returns:
-        A list of dialogue blocks, where each block is a dictionary:
-        [{ "speaker": str ("Teacher" or "Student"),
-           "scene_number": int,
-           "dialogue": str }, ...]
-        Returns an empty list if generation fails.
+        A list of dialogue block dictionaries:
+        [{
+            "scene_number": int, 
+            "speaker": str (e.g., "Narrator", "Character A"), 
+            "dialogue": str, 
+            "actions_or_visuals": str
+        }, ...]
+        Returns empty list on failure.
     """
     if not scenes:
-        print("Cannot generate dialogue: No scenes provided.")
+        print("Error: Cannot generate dialogue without scenes.")
         return []
 
-    # Prepare scene context for the prompt more concisely
-    scene_summary = "\\n".join([f"- Scene {s['scene_number']}: Starts with '{s['content'][:80]}...'" for s in scenes])
+    # We'll process by scene groups to maintain context while limiting image count
+    all_dialogue_blocks = []
+    
+    # Map image labels to their paths for quick lookup
+    image_path_map = {img["label"]: img["path"] for img in images_info if "label" in img and "path" in img}
+    
+    # Group scenes to keep under MAX_IMAGES_PER_CHUNK limit
+    scene_groups = []
+    current_group = []
+    current_group_images = set()
+    
+    for scene in scenes:
+        scene_images = scene.get("images_in_scene", [])
+        # If adding this scene would exceed our image limit, start a new group
+        if len(current_group_images.union(scene_images)) > MAX_IMAGES_PER_CHUNK and current_group:
+            scene_groups.append(current_group)
+            current_group = [scene]
+            current_group_images = set(scene_images)
+        else:
+            current_group.append(scene)
+            current_group_images.update(scene_images)
+    
+    # Add the last group if it exists
+    if current_group:
+        scene_groups.append(current_group)
+    
+    print(f"Split {len(scenes)} scenes into {len(scene_groups)} groups for dialogue generation")
+    
+    # Process each scene group
+    for group_idx, scene_group in enumerate(scene_groups):
+        # Get images for this group
+        group_image_labels = set()
+        for scene in scene_group:
+            group_image_labels.update(scene.get("images_in_scene", []))
+        
+        group_image_paths = [image_path_map[label] for label in group_image_labels if label in image_path_map]
+        
+        # Prepare scene data for the prompt
+        scenes_input = "\n".join([
+            f"Scene {s['scene_number']}:\nContent: {s['content']}\nRelevant Images: {s.get('images_in_scene', [])}" 
+            for s in scene_group
+        ])
+        
+        # Set image instructions based on images availability
+        if group_image_labels:
+            image_instructions = f"""\
+IMPORTANT CONTEXT: I am providing you with {len(group_image_labels)} images extracted from the source document. The `images_in_scene` field for each scene lists the relevant image labels.
 
-    # Limit original text in prompt to avoid exceeding context if it's huge
-    max_context_chars = 5000 
-    context_text_snippet = original_text[:max_context_chars]
-    if len(original_text) > max_context_chars:
-        context_text_snippet += "\\n... (Original text truncated for brevity in prompt)"
+When writing the dialogue or the `actions_or_visuals` description for a dialogue block within a scene, refer to these images by examining them and understanding what they depict. For example, you might write dialogue like "...as you can see in this diagram..." or an action like "(Visual: Show the circuit diagram)". You can reference the images by their labels (e.g., "[IMG_3]") to be precise.
+""" 
+        else:
+            image_instructions = """\
+IMPORTANT CONTEXT: The scenes provided do not have associated images. Focus on creating dialogue based on the text content alone.
+"""
 
+        prompt = f"""\
+You are an AI assistant creating dialogue for an educational video based on the provided scenes.
+Your task is to generate engaging and informative dialogue between one or two speakers (e.g., "Narrator", "Instructor", "Student A", "Student B") that explains the content of each scene.
 
-    prompt = f"""\
-You are an AI assistant creating an educational dialogue based on provided text snippets (scenes).
+{image_instructions}
 
-Scene Structure:
-The source material has been divided into the following scenes, with a preview of their content:
-{scene_summary}
+Provided Scenes:
+```
+{scenes_input}
+```
+
+Full Original Text (for broader context, do not simply copy dialogue from here):
+```
+{original_text[:MAX_CHARS_PER_CHUNK]} 
+```
+(Note: Original text might be truncated for brevity in this prompt)
 
 Task:
-Create an engaging and explanatory dialogue between two characters: "Teacher" and "Student".
-- The Teacher's role is to explain the concepts presented in each scene clearly and simply.
-- The Student's role is to ask pertinent questions, seek clarification, or summarize understanding, prompting the Teacher's explanations.
-- The dialogue must progress logically through the scenes, referencing the content of each scene number.
-- Every line of dialogue MUST be associated with exactly one `scene_number` from the provided scene list.
-- Generate dialogue that covers the core information within the scenes.
-- Keep the dialogue concise and focused for a video format.
+Generate a JSON response containing a single key "dialogue_blocks". The value should be a list of JSON objects, where each object represents a single utterance or action description and contains:
+- "scene_number": The integer number of the scene this block belongs to (must match one of the provided scene numbers).
+- "speaker": A string indicating the speaker (e.g., "Narrator", "Host", "Expert"). Use consistent speaker names. Use "Narrator" if only one speaker is needed.
+- "dialogue": A string containing the spoken words for this block. Keep dialogue concise and clear.
+- "actions_or_visuals": A string describing any recommended on-screen actions, text overlays, or visual cues (like referring to images using their [IMG_N] labels). Keep this brief.
 
-Output Format:
-Generate a JSON response containing a single key "dialogue_blocks". The value should be a list of JSON objects. Each object represents one utterance (a block of speech from one character) and must contain the following keys:
-- "speaker": A string, MUST be either "Teacher" or "Student".
-- "scene_number": An integer corresponding EXACTLY to the scene the dialogue relates to (must be one of the provided scene numbers: {', '.join(map(str, [s['scene_number'] for s in scenes]))}).
-- "dialogue": A string containing the character's spoken words for that block. Do not include the speaker's name (e.g., "Teacher:") within this string.
+Rules:
+- Create dialogue that covers the key information in each scene's content.
+- Ensure the dialogue flows logically from one block to the next, and from one scene to the next.
+- Dialogue blocks MUST be ordered sequentially according to their scene number and their logical order within the scene.
+- Refer to relevant images naturally within the 'dialogue' or 'actions_or_visuals' fields using their labels (e.g., `[IMG_1]`) as specified in the `images_in_scene` for that scene, if applicable and helpful.
+- Use clear, educational language suitable for the content.
+- Ensure every scene number from the input is represented by at least one dialogue block.
 
 Example JSON Output Structure:
 {{
   "dialogue_blocks": [
-    {{ "speaker": "Teacher", "scene_number": 1, "dialogue": "Today we'll start with the basics mentioned in scene 1..." }},
-    {{ "speaker": "Student", "scene_number": 1, "dialogue": "Okay, so what is the main idea there?" }},
-    {{ "speaker": "Teacher", "scene_number": 2, "dialogue": "Good question! Scene 2 explains that..." }},
-    {{ "speaker": "Teacher", "scene_number": 2, "dialogue": "It breaks down into these parts..." }},
-    {{ "speaker": "Student", "scene_number": 2, "dialogue": "Ah, I see how that connects." }},
-    {{ "speaker": "Teacher", "scene_number": 3, "dialogue": "Now, moving onto scene 3..." }}
-    // ... (dialogue continues for other scenes)
+    {{"scene_number": 1, "speaker": "Narrator", "dialogue": "Welcome! Today we discuss topic X.", "actions_or_visuals": "(Intro title card)"}},
+    {{"scene_number": 1, "speaker": "Narrator", "dialogue": "The first key point is explained here, referencing the diagram.", "actions_or_visuals": "(Show diagram [IMG_1])"}},
+    {{"scene_number": 2, "speaker": "Instructor", "dialogue": "Now let's look at the next step.", "actions_or_visuals": "(Transition graphic)"}},
+    {{"scene_number": 2, "speaker": "Instructor", "dialogue": "This involves component Y, shown in [IMG_3].", "actions_or_visuals": "(Highlight component Y on screen, show [IMG_3])"}},
+    ...
   ]
 }}
 
-Constraint Checklist & Confidence Score:
-Before finalizing the JSON, double-check it adheres to all constraints:
-1.  Is the output valid JSON? Yes/No
-2.  Is there a root key "dialogue_blocks" with a list value? Yes/No
-3.  Does each item in the list have ONLY "speaker", "scene_number", "dialogue" keys? Yes/No
-4.  Is "speaker" always "Teacher" or "Student"? Yes/No
-5.  Is "scene_number" always an integer from the valid list? Yes/No
-6.  Is "dialogue" always a non-empty string? Yes/No
-7.  Does the dialogue logically progress with the scenes? Yes/No
-Confidence Score (1-5): [Score]
-
-Generate the JSON output now based on the scenes and the goal of creating an explanatory Teacher/Student dialogue. Adhere strictly to the format.
-(You don't need to include the Constraint Checklist in the final JSON output, it's just for your internal verification).
+Generate the JSON output now. Ensure the entire output is valid JSON. Ensure `scene_number` correctly links blocks to the input scenes.
 """
-# Note: Added original_text context back lightly, but emphasized scenes as primary guide.
-# Added constraint checklist to prompt for better adherence.
+        try:
+            # Call Gemini with images if available
+            if group_image_paths:
+                print(f"--- Calling Gemini (JSON) with {len(group_image_paths)} images for dialogue group {group_idx+1}/{len(scene_groups)} ---")
+                response_json = _call_gemini_with_images(prompt, group_image_paths, is_json_output=True)
+            else:
+                print(f"--- Calling Gemini (JSON) for dialogue group {group_idx+1}/{len(scene_groups)} ---")
+                response_json = _call_gemini_text_only(prompt, is_json_output=True)
 
-    try:
-        response_json = _call_gemini(prompt, is_json_output=True)
-
-        if isinstance(response_json, dict) and "dialogue_blocks" in response_json and isinstance(response_json["dialogue_blocks"], list):
-            validated_dialogue = []
-            valid_scene_numbers = {s["scene_number"] for s in scenes}
-
-            for block in response_json["dialogue_blocks"]:
-                # Add more robust checking
-                if not isinstance(block, dict):
-                     print(f"Warning: Dialogue block is not a dict: {block}")
-                     continue
+            if isinstance(response_json, dict) and "dialogue_blocks" in response_json and isinstance(response_json["dialogue_blocks"], list):
+                validated_blocks = []
+                group_scene_numbers = {scene["scene_number"] for scene in scene_group}
                 
-                required_keys = {"speaker", "scene_number", "dialogue"}
-                if not required_keys.issubset(block.keys()):
-                    print(f"Warning: Dialogue block missing keys ({required_keys - set(block.keys())}): {block}")
-                    continue
+                for block in response_json["dialogue_blocks"]:
+                    # Validate each dialogue block
+                    if isinstance(block, dict) and \
+                       all(k in block for k in ["scene_number", "speaker", "dialogue", "actions_or_visuals"]) and \
+                       isinstance(block["scene_number"], int) and block["scene_number"] in group_scene_numbers and \
+                       isinstance(block["speaker"], str) and block["speaker"].strip() and \
+                       isinstance(block["dialogue"], str) and block["dialogue"].strip():
+                       
+                        validated_blocks.append({
+                            "scene_number": block["scene_number"],
+                            "speaker": block["speaker"].strip(),
+                            "dialogue": block["dialogue"].strip(),
+                            "actions_or_visuals": block.get("actions_or_visuals", "").strip()
+                        })
+                    else:
+                        # Print a warning but don't halt processing
+                        print(f"Warning: Invalid dialogue block structure or scene number: {block}")
+                        # Attempt to correct scene number if that's the only issue
+                        if isinstance(block, dict) and all(k in block for k in ["scene_number", "speaker", "dialogue"]):
+                            if block["scene_number"] not in group_scene_numbers:
+                                print(f"  Attempting to correct invalid scene number {block['scene_number']}")
+                                # Assign to first scene in the group as a fallback
+                                corrected_block = block.copy()
+                                corrected_block["scene_number"] = scene_group[0]["scene_number"]
+                                validated_blocks.append(corrected_block)
                 
-                speaker = block["speaker"]
-                scene_num = block["scene_number"]
-                dialogue_text = block["dialogue"]
-
-                if not isinstance(speaker, str) or speaker not in ["Teacher", "Student"]:
-                     print(f"Warning: Invalid speaker '{speaker}' in block: {block}")
-                     continue
-                if not isinstance(scene_num, int) or scene_num not in valid_scene_numbers:
-                     print(f"Warning: Invalid scene_number '{scene_num}' (Valid: {valid_scene_numbers}) in block: {block}")
-                     continue
-                if not isinstance(dialogue_text, str) or not dialogue_text.strip():
-                     print(f"Warning: Empty dialogue text in block: {block}")
-                     continue
+                all_dialogue_blocks.extend(validated_blocks)
+                print(f"Group {group_idx+1}: Generated {len(validated_blocks)} dialogue blocks. Total: {len(all_dialogue_blocks)}")
+            else:
+                print(f"Warning: Unexpected JSON structure for dialogue response in group {group_idx+1}: {response_json}")
                 
-                # If checks pass, add the validated block
-                validated_dialogue.append({
-                    "speaker": speaker,
-                    "scene_number": scene_num,
-                    "dialogue": dialogue_text.strip()
-                })
-
-            if not validated_dialogue:
-                 print("Warning: Gemini returned empty or invalid dialogue block list after validation.")
-                 return []
-
-            print(f"Successfully generated and validated {len(validated_dialogue)} dialogue blocks.")
-            return validated_dialogue
-        else:
-            print(f"Warning: Unexpected JSON structure for dialogue response (missing 'dialogue_blocks' list?): {response_json}")
-            return []
-
-    except Exception as e:
-        print(f"Error generating structured dialogue from Gemini: {e}")
+        except Exception as e:
+            print(f"Error generating dialogue from Gemini for group {group_idx+1}: {e}")
+    
+    # Final validation and numbering
+    if not all_dialogue_blocks:
+        print("Warning: No valid dialogue blocks were generated from any group.")
         return []
+        
+    # Sort blocks by scene number
+    all_dialogue_blocks.sort(key=lambda x: x["scene_number"])
+    
+    print(f"Successfully generated and validated {len(all_dialogue_blocks)} dialogue blocks across {len(scene_groups)} groups.")
+    return all_dialogue_blocks
 
 # --- REMOVED OLD HELPER FUNCTIONS --- 
 # chunk_text_old and _call_gemini_old removed as they are no longer used.
