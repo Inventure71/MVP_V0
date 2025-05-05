@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+PyPDF2
+gtts
+moviepy==1.0.3
+requests
+python-dotenv 
