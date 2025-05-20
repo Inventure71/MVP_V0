@@ -41,10 +41,10 @@ def process_uploaded_pdfs(pdf_paths: List[str], session_id: str) -> Tuple[str, L
             pdf_text, pdf_images_info = extract_text_and_images_from_pdf(pdf_path, image_output_dir)
 
             if pdf_text:
-                 combined_text += pdf_text
-                 combined_text += "\n\n---\n\n" # Add a separator between documents
+                combined_text += pdf_text
+                combined_text += "\n\n---\n\n" # Add a separator between documents
             if pdf_images_info:
-                 all_images_info.extend(pdf_images_info)
+                all_images_info.extend(pdf_images_info)
 
         except Exception as e:
             print(f"Error processing {pdf_path} in process_uploaded_pdfs: {e}")

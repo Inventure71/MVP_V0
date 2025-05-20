@@ -1,4 +1,4 @@
-# PDF to Lesson Video MVP
+# esson Video MVP
 
 ## Features
 - Upload PDFs

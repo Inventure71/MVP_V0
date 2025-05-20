@@ -24,14 +24,14 @@ def _add_label_to_image(image_bytes: bytes, label: str, output_path: str, font_s
 
         # Calculate text size (handle potential AttributeError for default font)
         try:
-             text_bbox = font.getbbox(label)
-             text_width = text_bbox[2] - text_bbox[0]
-             text_height = text_bbox[3] - text_bbox[1]
+            text_bbox = font.getbbox(label)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
         except AttributeError:
-             # Estimate size for default font
-             # This is less accurate
-             text_width = len(label) * (font_size // 2) # Rough estimate
-             text_height = font_size # Rough estimate
+            # Estimate size for default font
+            # This is less accurate
+            text_width = len(label) * (font_size // 2) # Rough estimate
+            text_height = font_size # Rough estimate
 
 
         label_height = text_height + 2 * padding
@@ -52,10 +52,10 @@ def _add_label_to_image(image_bytes: bytes, label: str, output_path: str, font_s
         # Determine save format
         img_format = img.format or 'PNG' # Default to PNG if format unknown
         if img_format not in ['PNG', 'JPEG', 'JPG', 'GIF', 'BMP', 'TIFF']:
-             print(f"Original format {img_format} not ideal for saving, using PNG.")
-             img_format = 'PNG'
-             # Ensure output path has the correct extension
-             output_path = os.path.splitext(output_path)[0] + ".png"
+            print(f"Original format {img_format} not ideal for saving, using PNG.")
+            img_format = 'PNG'
+            # Ensure output path has the correct extension
+            output_path = os.path.splitext(output_path)[0] + ".png"
 
 
         new_img.save(output_path, format=img_format)
@@ -65,14 +65,14 @@ def _add_label_to_image(image_bytes: bytes, label: str, output_path: str, font_s
         print(f"Error processing/annotating image for label {label}: {e}")
         # Fallback: Save raw image bytes without label if annotation fails
         try:
-             fallback_path = os.path.splitext(output_path)[0] + "_raw" + os.path.splitext(output_path)[1]
-             with open(fallback_path, "wb") as f_raw:
-                 f_raw.write(image_bytes)
-             print(f"Saved raw image bytes to {fallback_path}")
-             return fallback_path # Return the raw path as fallback
+            fallback_path = os.path.splitext(output_path)[0] + "_raw" + os.path.splitext(output_path)[1]
+            with open(fallback_path, "wb") as f_raw:
+                f_raw.write(image_bytes)
+            print(f"Saved raw image bytes to {fallback_path}")
+            return fallback_path # Return the raw path as fallback
         except Exception as e_raw:
-             print(f"Error saving raw image bytes for label {label}: {e_raw}")
-             return None # Indicate failure
+            print(f"Error saving raw image bytes for label {label}: {e_raw}")
+            return None # Indicate failure
 
 
 def extract_text_and_images_from_pdf(pdf_path: str, output_image_dir: str) -> Tuple[str, List[Dict[str, str]]]:
@@ -113,31 +113,31 @@ def extract_text_and_images_from_pdf(pdf_path: str, output_image_dir: str) -> Tu
         if image_list:
             print(f"Found {len(image_list)} images on page {page_index + 1}")
             for img_index, img_info in enumerate(image_list):
-                 image_counter += 1
-                 label = f"[IMG_{image_counter}]"
-                 xref = img_info[0]
-                 try:
-                     base_image = doc.extract_image(xref)
-                     image_bytes = base_image["image"]
-                     image_ext = base_image["ext"]
+                image_counter += 1
+                label = f"[IMG_{image_counter}]"
+                xref = img_info[0]
+                try:
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
 
-                     # Define image filename based on label
-                     image_filename = f"{label[1:-1]}.{image_ext}" # e.g., IMG_1.png
-                     annotated_image_path = os.path.join(output_image_dir, image_filename)
+                    # Define image filename based on label
+                    image_filename = f"{label[1:-1]}.{image_ext}" # e.g., IMG_1.png
+                    annotated_image_path = os.path.join(output_image_dir, image_filename)
 
-                     # Add label to image and save
-                     saved_path = _add_label_to_image(image_bytes, label, annotated_image_path)
+                    # Add label to image and save
+                    saved_path = _add_label_to_image(image_bytes, label, annotated_image_path)
 
-                     if saved_path:
-                          # Insert placeholder at the end of the current page's text
-                          combined_text += f" {label} \n"
-                          extracted_images_info.append({"label": label, "path": saved_path})
-                          print(f"Saved annotated image: {saved_path}")
-                     else:
-                          print(f"Failed to save image {label} for page {page_index + 1}")
+                    if saved_path:
+                        # Insert placeholder at the end of the current page's text
+                        combined_text += f" {label} \n"
+                        extracted_images_info.append({"label": label, "path": saved_path})
+                        print(f"Saved annotated image: {saved_path}")
+                    else:
+                        print(f"Failed to save image {label} for page {page_index + 1}")
 
-                 except Exception as e:
-                      print(f"Error extracting image xref {xref} on page {page_index + 1}: {e}")
+                except Exception as e:
+                    print(f"Error extracting image xref {xref} on page {page_index + 1}: {e}")
 
 
     doc.close()

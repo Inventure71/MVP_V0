@@ -118,7 +118,7 @@ def _create_scene_visual(image_paths: List[str], duration: float) -> Optional[Co
     if ColorClip is None or ImageClip is None or CompositeVideoClip is None:
          raise ImportError("MoviePy components not loaded.")
 
-    # Base background
+    # Base background       
     background = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=BACKGROUND_COLOR, duration=duration)
     clips_to_composite = [background]
 
@@ -185,8 +185,8 @@ def _create_scene_visual(image_paths: List[str], duration: float) -> Optional[Co
     return scene_visual
 
 def create_video_from_blocks(
-    scenes: List[Dict[str, Any]],
-    processed_dialogue_blocks: List[Dict[str, Any]],
+    scenes: List[Dict[str, Any]], 
+    processed_dialogue_blocks: List[Dict[str, Any]], 
     output_dir: str, # Expected to be results/{job_id}
     constant_delay: float = INTER_SCENE_DELAY,
     filename: str = "lesson_video.mp4"
@@ -248,7 +248,7 @@ def create_video_from_blocks(
             scene_num = scene_info["scene_number"]
             # scene_content = scene_info.get("content", f"Scene {scene_num}") # Text content might be less relevant now
             image_labels = scene_info.get("images_in_scene", [])
-
+            
             print(f"-- Processing Scene {scene_num} (Images: {image_labels}) --")
 
             scene_audio_blocks = dialogue_by_scene.get(scene_num, [])
@@ -295,7 +295,7 @@ def create_video_from_blocks(
 
             # DEBUG: Check collected clips for the scene
             print(f"   DEBUG: Scene {scene_num} - Collected {len(scene_timed_audio_clips)} audio clips and {len(scene_timed_dialogue_clips)} dialogue visual clips.")
-
+            
             # 2. Calculate scene visual duration
             scene_visual_duration = total_scene_audio_duration + constant_delay
             scene_visual_duration = max(constant_delay, scene_visual_duration) # Ensure minimum duration
@@ -334,75 +334,81 @@ def create_video_from_blocks(
             # 5. Combine audio for the scene (dialogue + potential silence at end)
             scene_final_audio = None
             if scene_timed_audio_clips:
-                 try:
-                     print(f"   DEBUG: Scene {scene_num} - Attempting to concatenate {len(scene_timed_audio_clips)} audio clips.") # DEBUG
-                     scene_final_audio = concatenate_audioclips(scene_timed_audio_clips)
-                     print(f"   DEBUG: Scene {scene_num} - Audio concatenated. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
-                 except Exception as e:
-                     print(f"   Warning: Failed to concatenate audio clips for scene {scene_num}: {e}")
-                     # Create silence for the expected duration as fallback?
-                     scene_final_audio = make_silence(total_scene_audio_duration)
-                     print(f"   DEBUG: Scene {scene_num} - Created silence clip. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
+                try:
+                    print(f"   DEBUG: Scene {scene_num} - Attempting to concatenate {len(scene_timed_audio_clips)} audio clips.") # DEBUG
+                    scene_final_audio = concatenate_audioclips(scene_timed_audio_clips)
+                    print(f"   DEBUG: Scene {scene_num} - Audio concatenated. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
+                except Exception as e:
+                    print(f"   Warning: Failed to concatenate audio clips for scene {scene_num}: {e}")
+                    # Create silence for the expected duration as fallback?
+                    scene_final_audio = make_silence(total_scene_audio_duration)
+                    print(f"   DEBUG: Scene {scene_num} - Created silence clip. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
             elif not scene_final_audio: # If no audio blocks, create silence for full duration
-                 scene_final_audio = make_silence(scene_visual_duration)
-                 print(f"   DEBUG: Scene {scene_num} - Created silence clip. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
+                scene_final_audio = make_silence(scene_visual_duration)
+                print(f"   DEBUG: Scene {scene_num} - Created silence clip. Duration: {scene_final_audio.duration:.2f}s") # DEBUG
 
             # DEBUG: Check final audio duration before setting
             final_audio_duration_to_set = scene_final_audio.duration if scene_final_audio else 0.0
             print(f"   DEBUG: Scene {scene_num} - Final audio duration before setting: {final_audio_duration_to_set:.2f}s")
 
             # 6. Set audio for the final scene visual clip
+            final_scene_clip = None  # Initialize outside conditionals
             if scene_final_audio:
                 try:
-                     # Ensure audio duration matches visual duration precisely before setting
-                     if abs(scene_final_audio.duration - scene_visual_duration) > 0.01:
-                          print(f"   Warning: Scene {scene_num} audio duration ({scene_final_audio.duration:.2f}s) differs from visual duration ({scene_visual_duration:.2f}s). Adjusting audio duration.")
-                          # Use individual audio clip methods instead of composite method
-                          if hasattr(scene_final_audio, 'subclip'):
-                              scene_final_audio = scene_final_audio.subclip(0, scene_visual_duration)
-                          else:
-                              # For CompositeAudioClip that doesn't have subclip method
-                              # Re-extract the audio clips and trim them if needed
-                              print(f"   Warning: Audio clip type {type(scene_final_audio)} doesn't have subclip method.")
-                              if isinstance(scene_final_audio, moviepy.audio.AudioClip.CompositeAudioClip) and scene_timed_audio_clips:
-                                  # Create a new CompositeAudioClip with the appropriate duration
-                                  # This recreates the audio using the original clips but setting a max_duration
-                                  from_clips = scene_final_audio.clips
-                                  # Keep only clips that start before the target duration
-                                  filtered_clips = [clip for clip in from_clips if clip.start < scene_visual_duration]
-                                  for clip in filtered_clips:
-                                      if clip.start + clip.duration > scene_visual_duration:
-                                          # Trim clip to end at scene_visual_duration
-                                          if hasattr(clip, 'subclip'):
-                                              end_time = scene_visual_duration - clip.start
-                                              clip = clip.subclip(0, end_time)
-                                  
-                                  # If we have clips to combine after filtering
-                                  if filtered_clips:
-                                      scene_final_audio = concatenate_audioclips(filtered_clips)
-                                      print(f"      Created new composite audio with duration: {scene_final_audio.duration:.2f}s")
-                                  else:
-                                      # Fallback if no clips remain after filtering
-                                      shorter_duration = min(scene_final_audio.duration, scene_visual_duration)
-                                      scene_final_audio = make_silence(shorter_duration)
-                                      print(f"      Created silence clip with duration: {shorter_duration:.2f}s")
-                              else:
-                                  # Generic fallback - create silent clip with appropriate duration
-                                  shorter_duration = min(scene_final_audio.duration, scene_visual_duration)
-                                  scene_final_audio = make_silence(shorter_duration)
-                                  print(f"      Created silence clip with duration: {shorter_duration:.2f}s")
+                    # Ensure audio duration matches visual duration precisely before setting
+                    if abs(scene_final_audio.duration - scene_visual_duration) > 0.01:
+                        print(f"   Warning: Scene {scene_num} audio duration ({scene_final_audio.duration:.2f}s) differs from visual duration ({scene_visual_duration:.2f}s). Adjusting audio duration.")
+                        # Use individual audio clip methods instead of composite method
+                        if hasattr(scene_final_audio, 'subclip'):
+                            scene_final_audio = scene_final_audio.subclip(0, scene_visual_duration)
+                        else:
+                            # For CompositeAudioClip that doesn't have subclip method
+                            # Re-extract the audio clips and trim them if needed
+                            print(f"   Warning: Audio clip type {type(scene_final_audio)} doesn't have subclip method.")
+                            if isinstance(scene_final_audio, moviepy.audio.AudioClip.CompositeAudioClip) and scene_timed_audio_clips:
+                                # Create a new CompositeAudioClip with the appropriate duration
+                                from_clips = scene_final_audio.clips
+                                # Keep only clips that start before the target duration
+                                filtered_clips = [clip for clip in from_clips if clip.start < scene_visual_duration]
+                                
+                                # Create new list for updated clips
+                                updated_clips = []
+                                for clip in filtered_clips:
+                                    if clip.start + clip.duration > scene_visual_duration:
+                                        # Trim clip to end at scene_visual_duration
+                                        if hasattr(clip, 'subclip'):
+                                            end_time = scene_visual_duration - clip.start
+                                            updated_clip = clip.subclip(0, end_time)
+                                            updated_clips.append(updated_clip)
+                                    else:
+                                        # Keep clip as is if it already fits
+                                        updated_clips.append(clip)
+                                
+                                # If we have clips to combine after filtering
+                                if updated_clips:
+                                    scene_final_audio = concatenate_audioclips(updated_clips)
+                                    print(f"      Created new composite audio with duration: {scene_final_audio.duration:.2f}s")
+                                else:
+                                    # Fallback if no clips remain after filtering
+                                    scene_final_audio = make_silence(scene_visual_duration)
+                                    print(f"      Created silence clip with duration: {scene_visual_duration:.2f}s")
+                            else:
+                                # Generic fallback - create silent clip with appropriate duration
+                                scene_final_audio = make_silence(scene_visual_duration)
+                                print(f"      Created silence clip with duration: {scene_visual_duration:.2f}s")
 
-                     # Corrected method name
-                     final_scene_clip = final_scene_visual.with_audio(scene_final_audio)
+                    # Set the audio on the final clip - this will include actual audio
+                    final_scene_clip = final_scene_visual.with_audio(scene_final_audio)
+                    print(f"   Scene {scene_num} audio set successfully.")
                 except Exception as e:
-                     print(f"   Error setting audio for scene {scene_num}: {e}. Scene might be silent.")
-                     traceback.print_exc()
-                     final_scene_clip = final_scene_visual.with_audio(None) # Fallback to silent
+                    print(f"   Error setting audio for scene {scene_num}: {e}. Scene will be silent.")
+                    traceback.print_exc()
+                    final_scene_clip = final_scene_visual.with_audio(None) # Fallback to silent
             else:
-                print(f"   Scene {scene_num} will be silent.")
+                print(f"   Scene {scene_num} will be silent (no audio to set).")
                 final_scene_clip = final_scene_visual.with_audio(None)
 
-
+            # Add the scene clip to our collection
             all_final_scene_clips.append(final_scene_clip)
             current_global_time += scene_visual_duration # Update global time marker
 
@@ -410,7 +416,7 @@ def create_video_from_blocks(
         if not all_final_scene_clips:
             print("Error: No valid scene clips were generated. Cannot create video.")
             return None
-
+            
         print("\nConcatenating final scene clips...")
         final_video = concatenate_videoclips(all_final_scene_clips)
 
@@ -421,6 +427,8 @@ def create_video_from_blocks(
             fps=VIDEO_FPS,
             codec='libx264',
             audio_codec='aac',
+            threads=8,          # Good setting for a MacBook Pro
+            preset='superfast',
             temp_audiofile=os.path.join(output_dir, 'temp-audio.m4a'), # Explicit temp file
             remove_temp=True,
             logger='bar' # Progress bar
@@ -446,148 +454,4 @@ def create_video_from_blocks(
             except Exception as e_close:
                 # Log error but don't stop execution
                 print(f"   Warning: Error closing audio file: {e_close}")
-        print("Cleanup finished.")
-
-# --- Old Function (Remove or Comment Out) ---
-# def create_video(scenes: List[Dict[str, str]], audio_path: str, output_dir: str, filename: str = "lesson_video.mp4") -> str:
-#     ...
-
-# def create_video(scenes: List[Dict[str, str]], audio_path: str, output_dir: str, filename: str = "lesson_video.mp4") -> str:
-#     """Creates a video from scenes (text overlays) synchronized with audio.
-#
-#     Args:
-#         scenes: A list of scene dictionaries with 'text_overlay'.
-#         audio_path: Path to the dialogue audio file (MP3).
-#         output_dir: Directory to save the final video.
-#         filename: Name for the output video file.
-#
-#     Returns:
-#         The full path to the generated MP4 video file.
-#         Returns None if video creation fails.
-#     """
-#     output_path = os.path.join(output_dir, filename)
-#
-#     if not scenes:
-#         raise ValueError("Cannot create video: No scenes provided.")
-#     if not audio_path or not os.path.exists(audio_path):
-#         # If no audio, we could potentially create a silent video, 
-#         # but for now, let's assume audio is required.
-#         raise ValueError("Cannot create video: Audio file not found or not provided.")
-#
-#     try:
-#         # 1. Load Audio
-#         print(f"Loading audio: {audio_path}")
-#         audio_clip = AudioFileClip(audio_path)
-#         total_audio_duration = audio_clip.duration
-#         print(f"Audio duration: {total_audio_duration:.2f} seconds")
-#
-#         if total_audio_duration <= 0:
-#             raise ValueError("Audio clip has zero or negative duration.")
-#
-#         # 2. Calculate Scene Durations (simple equal division)
-#         num_scenes = len(scenes)
-#         if num_scenes == 0:
-#             raise ValueError("Cannot create video with zero scenes.")
-#         
-#         scene_duration = total_audio_duration / num_scenes
-#         print(f"Calculated duration per scene: {scene_duration:.2f} seconds")
-#
-#         # 3. Create Text Clips for Each Scene
-#         video_clips = []
-#         current_start_time = 0
-#         print(f"Generating {num_scenes} scene clips...")
-#         for i, scene in enumerate(scenes):
-#             text = scene.get('text_overlay', '')
-#             # Use visual description slightly (e.g., add it below overlay?)
-#             # visual_desc = scene.get('visual_description', '') 
-#             # For now, just using text_overlay
-#
-#             # Ensure text clip duration doesn't exceed total audio duration cumulative error
-#             clip_end_time = min(current_start_time + scene_duration, total_audio_duration)
-#             actual_clip_duration = max(0.01, clip_end_time - current_start_time) # Ensure non-zero duration
-#             
-#             # Handle the last clip precisely ending at the audio duration
-#             if i == num_scenes - 1:
-#                 actual_clip_duration = max(0.01, total_audio_duration - current_start_time)
-#
-#             print(f"  Scene {i}: Duration={actual_clip_duration:.2f}s, Text=\"{text[:50]}...\"")
-#
-#             # Render text to an image using PIL
-#             # Create background image
-#             img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), BACKGROUND_COLOR)
-#             draw = ImageDraw.Draw(img)
-#             # Load a truetype font, fallback to default if unavailable
-#             try:
-#                 pil_font = ImageFont.truetype(TEXT_FONT, TEXT_FONTSIZE)
-#             except Exception:
-#                 pil_font = ImageFont.load_default()
-#             # Wrap text based on approximate character width
-#             max_chars = int((VIDEO_WIDTH - 2 * TEXT_PADDING) / (TEXT_FONTSIZE * 0.6))
-#             lines = textwrap.wrap(text, width=max_chars)
-#             y_text = TEXT_PADDING
-#             for line in lines:
-#                 draw.text((TEXT_PADDING, y_text), line, font=pil_font, fill=TEXT_COLOR)
-#                 y_text += TEXT_FONTSIZE + 5  # Line spacing
-#             # Convert to numpy array and create an ImageClip
-#             import numpy as _np
-#             from moviepy import ImageClip
-#             frame = _np.array(img)
-#             clip = ImageClip(frame, duration=actual_clip_duration)
-#             video_clips.append(clip)
-#             current_start_time += actual_clip_duration
-#             
-#             # Safety break if cumulative time exceeds audio, though logic should prevent this
-#             if current_start_time > total_audio_duration * 1.01: # Add small tolerance
-#                  print(f"Warning: Cumulative clip time ({current_start_time}) exceeded audio duration ({total_audio_duration}). Stopping clip generation.")
-#                  break 
-#
-#         # 4. Concatenate Clips
-#         print("Concatenating video clips...")
-#         final_clip = concatenate_videoclips(video_clips, method="compose")
-#
-#         # 5. Add Audio
-#         print("Setting audio...")
-#         final_clip.audio = audio_clip # Correct way: Assign to the .audio attribute
-#
-#         # 6. Write Video File
-#         print(f"Writing video file to: {output_path}")
-#         # Use codecs suitable for web playback. Default libx264 for video and aac for audio are usually good.
-#         # Preset 'fast' provides a balance between speed and file size/quality.
-#         # threads=4 can speed up encoding if multiple cores are available.
-#         final_clip.write_videofile(
-#             output_path,
-#             codec='libx264',
-#             audio_codec='aac',
-#             temp_audiofile='temp-audio.m4a', # Recommended by moviepy docs
-#             remove_temp=True,
-#             preset='fast',
-#             fps=VIDEO_FPS,
-#             threads=4, # Adjust based on system cores
-#             logger='bar' # Show progress bar
-#         )
-#
-#         # Close clips to release resources
-#         audio_clip.close()
-#         for clip in video_clips:
-#              clip.close()
-#         final_clip.close()
-#
-#         print("Video creation successful.")
-#         return output_path
-#
-#     except ImportError as e:
-#          print(f"Moviepy Import Error: {e}. Ensure moviepy and its dependencies (like Pillow, numpy) are installed.")
-#          raise
-#     except OSError as e:
-#          print(f"OS Error during video processing: {e}. Check file paths and permissions.")
-#          print("This might also be related to missing dependencies like ImageMagick or ffmpeg.")
-#          raise
-#     except Exception as e:
-#         print(f"Error creating video: {e}")
-#         # Clean up potentially open clips in case of error
-#         if 'audio_clip' in locals() and hasattr(audio_clip, 'close'): audio_clip.close()
-#         if 'video_clips' in locals():
-#             for clip in video_clips:
-#                  if hasattr(clip, 'close'): clip.close()
-#         if 'final_clip' in locals() and hasattr(final_clip, 'close'): final_clip.close()
-#         raise Exception(f"Failed to create video: {e}") 
+        print("Cleanup finished.") 

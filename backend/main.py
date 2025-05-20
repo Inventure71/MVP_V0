@@ -1,8 +1,11 @@
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import uuid
+from typing import Optional
 from dotenv import load_dotenv
 
 # Import helper modules
@@ -18,14 +21,37 @@ load_dotenv()
 
 app = FastAPI()
 
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Define directories (ensure they exist)
 UPLOAD_DIR = "uploads"
 RESULTS_DIR = "results"
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# Mount the static files directory
+app.mount("/static", StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")), name="static")
+
+@app.get("/")
+async def read_root():
+    """Serve the frontend HTML page"""
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
 @app.post("/process-pdfs/")
-async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
+async def process_pdfs_endpoint(
+    background_tasks: BackgroundTasks, 
+    files: list[UploadFile] = File(...),
+    custom_instructions: Optional[str] = Form(None),
+    tts_engine: str = Form("gtts")
+):
     """
     Endpoint to upload PDFs, process them using the new scene/dialogue flow, 
     and generate a video lesson.
@@ -72,8 +98,12 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
         # --- 2. Generate Scenes (Gemini) ---
         try:
             print(f"Job {job_id}: Generating scenes from text with Gemini...")
-            # Pass both text and image info to Gemini processor
-            scenes = gemini_processor.generate_scenes_from_text(combined_text, all_images_info)
+            # Pass both text, image info, and custom instructions to Gemini processor
+            scenes = gemini_processor.generate_scenes_from_text(
+                combined_text, 
+                all_images_info,
+                custom_instructions
+            )
             if not scenes:
                  raise HTTPException(status_code=500, detail="Gemini failed to generate scene content.")
             print(f"Job {job_id}: Successfully generated {len(scenes)} scenes.")
@@ -84,8 +114,13 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
         # --- 3. Generate Dialogue Blocks (Gemini) ---
         try:
             print(f"Job {job_id}: Generating structured dialogue with Gemini...")
-            # Pass original text context, generated scenes, and image info
-            dialogue_blocks = gemini_processor.generate_structured_dialogue(combined_text, scenes, all_images_info)
+            # Pass original text context, generated scenes, image info, and custom instructions
+            dialogue_blocks = gemini_processor.generate_structured_dialogue(
+                combined_text, 
+                scenes, 
+                all_images_info,
+                custom_instructions
+            )
             if not dialogue_blocks:
                  raise HTTPException(status_code=500, detail="Gemini failed to generate dialogue content.")
             print(f"Job {job_id}: Successfully generated {len(dialogue_blocks)} dialogue blocks.")
@@ -97,7 +132,11 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
         try:
             print(f"Job {job_id}: Generating audio for {len(dialogue_blocks)} dialogue blocks...")
             # The dialogue blocks might *contain* image references from Gemini now
-            processed_dialogue_blocks = tts_processor.generate_audio_blocks(dialogue_blocks, job_result_dir)
+            processed_dialogue_blocks = tts_processor.generate_audio_blocks(
+                dialogue_blocks, 
+                job_result_dir,
+                tts_engine=tts_engine
+            )
             # Check if ANY audio was successfully generated
             successful_audio_count = sum(1 for b in processed_dialogue_blocks if b.get('audio_path') and b.get('duration') is not None)
             if successful_audio_count == 0 and len(processed_dialogue_blocks) > 0:
@@ -168,11 +207,6 @@ async def process_pdfs_endpoint(background_tasks: BackgroundTasks, files: list[U
                       file.file.close()
                  except Exception as e_close:
                       print(f"Job {job_id}: Error closing uploaded file handle for {file.filename}: {e_close}")
-
-
-@app.get("/")
-async def read_root():
-    return {"message": "Video Lesson Generator API (Updated Workflow)"}
 
 # Add logic to run the app with uvicorn if the script is executed directly
 if __name__ == "__main__":

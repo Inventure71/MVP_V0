@@ -4,4 +4,11 @@ PyPDF2
 gtts
 moviepy==1.0.3
 requests
-python-dotenv 
+python-dotenv
+google-generativeai
+PyMuPDF
+gTTS
+pillow
+numpy
+boto3
+mutagen 

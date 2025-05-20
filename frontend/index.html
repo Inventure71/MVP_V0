@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notely</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Notely</h1>
+        
+        <div class="upload-form">
+            <form id="pdfUploadForm">
+                <div class="form-group">
+                    <label for="pdfFiles">Upload PDF Files:</label>
+                    <input type="file" id="pdfFiles" name="files" accept="application/pdf" multiple required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="customInstructions">Custom Instructions for AI (optional):</label>
+                    <textarea id="customInstructions" name="customInstructions" rows="4" 
+                        placeholder="Enter custom instructions for the AI model, e.g., 'Use a more conversational tone' or 'Make it suitable for elementary school students'"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="ttsEngine">Select Voice Engine:</label>
+                    <select id="ttsEngine" name="tts_engine">
+                        <option value="gtts" selected>Google TTS (Standard, Local)</option>
+                        <option value="polly">Amazon Polly (Neural, Cloud)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <button type="submit" id="submitBtn">Generate Video</button>
+                </div>
+            </form>
+        </div>
+        
+        <div id="processingStatus" class="hidden">
+            <div class="progress-container">
+                <div class="spinner"></div>
+                <h2>Processing Your PDF</h2>
+                <p id="statusMessage">Uploading files...</p>
+            </div>
+        </div>
+        
+        <div id="resultContainer" class="hidden">
+            <h2>Your Lesson Video</h2>
+            <div class="video-container">
+                <video id="resultVideo" controls></video>
+            </div>
+            <button id="downloadBtn">Download Video</button>
+        </div>
+    </div>
+    
+    <script src="/static/script.js"></script>
+</body>
+</html> 
