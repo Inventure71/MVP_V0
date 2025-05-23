@@ -1,4 +1,4 @@
-# esson Video MVP
+# Notely MVP
 
 ## Features
 - Upload PDFs
